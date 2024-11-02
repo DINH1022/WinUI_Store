@@ -1,8 +1,9 @@
-public class SQLDao : IDao
+public class PgSQLDao : IDao
 {
     private SqlConnection dbConnection=null;
 
-    public SQLDao(){
+
+    public PgSQLDao(){
         string connectionConfig = """
             Server = localhost;
             Database = supershop;
@@ -10,7 +11,19 @@ public class SQLDao : IDao
             Password = SqlServer@123;
             TrustServerCertificate = True;
         """;
-        var dbConnection= new SqlConnection(connectionConfig);
+        var dbConnection= new NpgsqlConnection(connectionConfig);
+        dbConnection.Open();
+    }
+
+    public PgSQLDao(string serverUrl, string databaseName, string userId, string password){
+        string connectionConfig = $"""
+            Server = {serverUrl};
+            Database = {databaseName};
+            User Id = {userId};
+            Password = {password};
+            TrustServerCertificate = True;
+        """;
+        var dbConnection= new NpgsqlConnection(connectionConfig);
         dbConnection.Open();
     }
 
@@ -19,7 +32,7 @@ public class SQLDao : IDao
     }
 
 
-    private string getSortStringOfOrder(string[] sortFields,Dictionary<string, SortType> sortOptions){
+    private string getSortString(string[] sortFields,Dictionary<string, SortType> sortOptions){
         string sortString = "ORDER BY ";
         bool useDefaultSort = true;
         int countSortFields = 0;
@@ -43,25 +56,46 @@ public class SQLDao : IDao
         return sortString;
     }
 
+    private string getWhereString(string[] whereFields,Dictionary<string, string> whereOptions){
+        string whereString = "WHERE ";
+        bool useDefaultWhere = true;
+        int countWhereFields = 0;
+        foreach(var item in whereOptions) {
+            if (whereFields.Contains(item.Key)) {
+                useDefaultWhere = false;
+                if(countWhereFields > 0){
+                    whereString += " AND ";
+                }
+                whereString += $"{item.Key} LIKE {item.Value}";
+                countWhereFields++;
+            }
+        }
+        if (useDefaultWhere) {
+            whereString = "";
+        }
+        return whereString;
+    }
+
     public Tuple<List<Shoes>, int> getShoes(
         int page, int rowsPerPage,
-        string keyword,
+        Dictionary<string,string> whereOptions,
         Dictionary<string, SortType> sortOptions){
         
         var string[] shoesFields = new string[]{
             "ID", "CategoryID", "Name", "Size", "Color", "Price", "Stock"
         };
         var result = new List<Shoes>();
-        string sortString = getSortStringOfShoes(shoesFields,sortOptions);
+        string sortString = getSortString(shoesFields,sortOptions);
+        string whereString = getWhereString(shoesFields,whereOptions);
         var sqlQuery = $"""
             SELECT count(*) over() as Total, ID, CategoryID, 
             Name, Size, Color, Price, Stock, Avatar
             FROM Shoes
-            WHERE Name like @Keyword
+            {whereString}
             {sortString} 
             OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;        
         """;
-        var command = new SqlCommand(sqlQuery, connection);
+        var command = new NpgsqlCommand(sqlQuery, connection);
         command.Parameters.Add("@Skip", SqlDbType.Int)
             .Value = (page - 1) * rowsPerPage;
         command.Parameters.Add("@Take", SqlDbType.Int)
@@ -77,7 +111,7 @@ public class SQLDao : IDao
                 totalShoes  = (int)reader["Total"];
              }
 
-            var shoes = new Shoes(); // Relation -> Objects
+            var shoes = new Shoes(); 
             shoes.ID = (int)reader["ID"];
             shoes.CategoryID = (string)reader["CategoryID"];
             shoes.Name = (string) reader["Name"];
@@ -112,7 +146,7 @@ public class SQLDao : IDao
             {sortString} 
             OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;        
         """;
-        var command = new SqlCommand(sqlQuery, connection);
+        var command = new NpgsqlCommand(sqlQuery, connection);
         command.Parameters.Add("@Skip", SqlDbType.Int)
             .Value = (page - 1) * rowsPerPage;
         command.Parameters.Add("@Take", SqlDbType.Int)
@@ -135,7 +169,7 @@ public class SQLDao : IDao
             order.OrderDate = (string) reader["OrderDate"];
             order.Status = (string) reader["Status"];
             order.TotalPrice = (decimal) reader["TotalPrice"];
-            result.Add(employee);
+            result.Add(order);
         }
         return new Tuple<List<Order>, int>(
             result, totalOrders
@@ -152,7 +186,7 @@ public class SQLDao : IDao
     public Tuple<List<OrderDetail>, int> getOrderDetailsByID(
         int orderID,
         int page, int rowsPerPage,
-        string keyword,
+        Dictionary<string,string> whereOptions,
         Dictionary<string, SortType> sortOptions){
 
         
@@ -160,17 +194,17 @@ public class SQLDao : IDao
             "ID", "OrderID", "ShoesID", "Quantity", "Price"
         };
         var result = new List<OrderDetail>();
+        const whereString = getWhereString(orderDetailFields,whereOptions);
         string sortString = getSortString(orderDetailFields,sortOptions);
         var sqlQuery = $"""
             SELECT count(*) over() as Total, ID, OrderID, 
             ShoesID, Quantity, Price
             FROM OrderDetail
-            WHERE OrderID = @OrderID
-            WHERE Quantity like @Keyword
+            {whereString}
             {sortString} 
             OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;        
         """;
-        var command = new SqlCommand(sqlQuery, connection);
+        var command = new NpgsqlCommand(sqlQuery, connection);
         command.Parameters.Add("@Skip", SqlDbType.Int)
             .Value = (page - 1) * rowsPerPage;
         command.Parameters.Add("@Take", SqlDbType.Int)
@@ -180,35 +214,94 @@ public class SQLDao : IDao
         command.Parameters.Add("@Keyword", SqlDbType.NText)
             .Value = $"%{keyword}%";
         var reader = command.ExecuteReader();
-        int totalOrders = -1;
+        int totalOrderDetails = -1;
 
         while (reader.Read())
         {
-            if (totalOrders == -1) {
-                totalOrders  = (int)reader["Total"];
+            if (totalOrderDetails == -1) {
+                totalOrderDetails  = (int)reader["Total"];
              }
 
-            var order= new Order(); // Relation -> Objects
-            order.ID = (int)reader["ID"];
-            order.UserID = (int)reader["UserID"];
-            order.AddressID = (int)reader["AddressID"];
-            order.OrderDate = (string) reader["OrderDate"];
-            order.Status = (string) reader["Status"];
-            order.TotalPrice = (decimal) reader["TotalPrice"];
-            result.Add(employee);
+            var orderDetail= new OrderDetail(); 
+            orderDetail.ID = (int)reader["ID"];
+            orderDetail.OrderID = (int)reader["OrderID"];
+            orderDetail.ShoesID = (int)reader["ShoesID"];
+            orderDetail.Quantity = (int)reader["Quantity"];
+            orderDetail.Price = (decimal)reader["Price"];
+            result.Add(orderDetail);
         }
         return new Tuple<List<Order>, int>(
-            result, totalOrders
+            result, totalOrderDetails
         );
     }
     
     public Tuple<List<User>, int> getUsers(
         int page, int rowsPerPage,
         string keyword,
-        Dictionary<string, SortType> sortOptions);
+        Dictionary<stirng,string> whereOptions,
+        Dictionary<string, SortType> sortOptions){
+
+        var string[] userFields = new string[]{
+            "ID","AddressID" ,"Name", "Email" , "Password", "Role","PhoneNumber"
+        }
+        var result = new List<User>();
+        string sortString = getSortString(userFields,sortOptions);
+        string whereString = getWhereString(userFields,whereOptions);
+        var sqlQuery = $"""
+            SELECT count(*) over() as Total, ID, Username, 
+            Password, Role
+            FROM User
+            {whereString}
+            {sortString} 
+            OFFSET @Skip ROWS FETCH NEXT @Take ROWS ONLY;        
+        """;
+        var command = new NpgsqlCommand(sqlQuery, connection);
+        command.Parameters.Add("@Skip", SqlDbType.Int)
+            .Value = (page - 1) * rowsPerPage;
+        command.Parameters.Add("@Take", SqlDbType.Int)
+            .Value = rowsPerPage;
+        var reader = command.ExecuteReader();
+        int totalUsers = -1;
+
+        while (reader.Read())
+        {
+            if (totalUsers == -1) {
+                totalUsers  = (int)reader["Total"];
+            }
+
+            var User=new User(); 
+            user.ID = (int)reader["ID"];
+            user.AddressID = (int)reader["AddressID"];
+            user.Name = (string)reader["Name"];
+            user.Email = (string)reader["Email"];
+            user.Password = (string)reader["Password"];
+            user.Role = (string)reader["Role"];
+            user.PhoneNumber = (string)reader["PhoneNumber"];
+            result.Add(user);
+        }
+        return new Tuple<List<Order>, int>(
+            result, totalUsers
+        );
+
+    }
 
     public User getUserByID(
-        int userID);
+        int userID){
+        var sqlQuery = $"""
+            SELECT ID, Username, Password, Role
+            FROM User
+            WHERE ID = @UserID""";
+        var command = new NpgsqlCommand(sqlQuery, connection);
+        command.Parameters.Add("@UserID", SqlDbType.Int)
+            .Value = userID;
+        var reader = command.ExecuteReader();
+        User user = new User();
+        user.ID = (int)reader["ID"];
+        user.Username = (string)reader["Username"];
+        user.Password = (string)reader["Password"];
+        user.Role = (string)reader["Role"];
+        return user;
+    }
 
     
 }
